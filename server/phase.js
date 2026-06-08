@@ -126,6 +126,8 @@ function resolveRound(room) {
       current_hp:    hpA[i] !== null ? hpA[i] : origA.current_hp,
       destroyed:     prekilledA[i],
       ability_triggered: prekilledA[i] ? "Splash" : null,
+      // Salvage fires even when killed by splash from an earlier lane
+      salvage_draw: prekilledA[i] && origA.ability === ABILITY.SALVAGE && !blackoutB,
     } : null;
     const resultB = origB ? {
       id: origB.id,
@@ -133,6 +135,7 @@ function resolveRound(room) {
       current_hp:    hpB[i] !== null ? hpB[i] : origB.current_hp,
       destroyed:     prekilledB[i],
       ability_triggered: prekilledB[i] ? "Splash" : null,
+      salvage_draw: prekilledB[i] && origB.ability === ABILITY.SALVAGE && !blackoutA,
     } : null;
 
     // Effective combatants (null if pre-killed by earlier splash)
@@ -141,8 +144,18 @@ function resolveRound(room) {
 
     if (cardA && cardB) {
       // ── Full combat ──────────────────────────────────────────────────────
+      // Priority: Blackout is resolved globally before lane combat, so it always
+      // beats JAM when they face each other in the same lane.
       const abilityJammedA = blackoutB || (origB.ability === ABILITY.JAM && !blackoutA);
       const abilityJammedB = blackoutA || (origA.ability === ABILITY.JAM && !blackoutB);
+
+      // JAM: mark as triggered on the jamming card (only if JAM itself wasn't jammed)
+      if (!abilityJammedA && origA.ability === ABILITY.JAM) resultA.ability_triggered = "Jam";
+      if (!abilityJammedB && origB.ability === ABILITY.JAM) resultB.ability_triggered = "Jam";
+
+      // BLACKOUT: mark as triggered on the Blackout card
+      if (!abilityJammedA && origA.ability === ABILITY.BLACKOUT) resultA.ability_triggered = "Blackout";
+      if (!abilityJammedB && origB.ability === ABILITY.BLACKOUT) resultB.ability_triggered = "Blackout";
 
       let offA = origA.offense;
       let offB = origB.offense;
@@ -152,11 +165,21 @@ function resolveRound(room) {
       if (!abilityJammedA && origA.ability === ABILITY.COORDINATED) offA += coordinatedBonus(origA, lanesA);
       if (!abilityJammedB && origB.ability === ABILITY.COORDINATED) offB += coordinatedBonus(origB, lanesB);
 
-      // BROADCAST: each Broadcast ally boosts this card's offense by +2
-      for (let j = 0; j < 3; j++) {
-        if (j === i) continue;
-        if (lanesA[j] && lanesA[j].ability === ABILITY.BROADCAST && !blackoutB) offA += 2;
-        if (lanesB[j] && lanesB[j].ability === ABILITY.BROADCAST && !blackoutA) offB += 2;
+      // BROADCAST: a Broadcast card gets +2 offense for each OTHER ally Broadcast card deployed.
+      // Only the Broadcast card itself is boosted — non-Broadcast cards are unaffected.
+      if (!blackoutB && origA.ability === ABILITY.BROADCAST) {
+        let bcastA = 0;
+        for (let j = 0; j < 3; j++) {
+          if (j !== i && lanesA[j] && lanesA[j].ability === ABILITY.BROADCAST) bcastA++;
+        }
+        if (bcastA > 0) { offA += bcastA * 2; resultA.ability_triggered = "Broadcast"; }
+      }
+      if (!blackoutA && origB.ability === ABILITY.BROADCAST) {
+        let bcastB = 0;
+        for (let j = 0; j < 3; j++) {
+          if (j !== i && lanesB[j] && lanesB[j].ability === ABILITY.BROADCAST) bcastB++;
+        }
+        if (bcastB > 0) { offB += bcastB * 2; resultB.ability_triggered = "Broadcast"; }
       }
 
       const multA = typeMultiplier(origA.role, origB.role);
@@ -324,6 +347,10 @@ function resolveRound(room) {
         // Redeploy: unopposed survivor returns to hand
         if (!result.destroyed && !result.ejected && !jammed && oCard.ability === ABILITY.REDEPLOY) {
           result.redeploy = true; result.ability_triggered = "Redeploy";
+        }
+        // Blackout: mark as triggered even when unopposed (it still disables all opponent abilities)
+        if (!jammed && oCard.ability === ABILITY.BLACKOUT) {
+          result.ability_triggered = "Blackout";
         }
       }
     }
