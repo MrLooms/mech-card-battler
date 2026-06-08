@@ -12,7 +12,6 @@ const BEATS = {
 function typeMultiplier(attackerRole, defenderRole) {
   const beats = BEATS[attackerRole] || [];
   if (beats.includes(defenderRole)) return 2;
-  // Loses = the roles that beat the attacker
   for (const [role, beaten] of Object.entries(BEATS)) {
     if (role === attackerRole) continue;
     if (beaten.includes(attackerRole) && role === defenderRole) return 0.5;
@@ -25,14 +24,15 @@ const ABILITY = {
   NONE: 0, ARMOR: 1, OVERCHARGE: 2, RETALIATE: 3, REGENERATE: 4,
   JAM: 5, REDEPLOY: 6, SALVAGE: 7, OVERCLOCK: 8, BROADCAST: 9,
   EJECT: 10, DEAD_WEIGHT: 11, BLACKOUT: 12, AFTERBURNER: 13,
-  DURABLE: 14, VOLATILE: 15, COORDINATED: 16,
+  DURABLE: 14, VOLATILE: 15, COORDINATED: 16, INITIATIVE: 17,
 };
 
-const ARMOR_REDUCTION  = 2;
-const REGEN_AMOUNT     = 2;
-const RETALIATE_FRAC   = 0.5;  // fraction of offense dealt back on loss
-const OVERCHARGE_BONUS = 3;
-const DEAD_WEIGHT_REDUCTION = 3;
+const ARMOR_REDUCTION    = 2;
+const REGEN_AMOUNT       = 2;
+const RETALIATE_FRAC     = 0.5;
+const OVERCHARGE_BONUS   = 3;
+const AFTERBURNER_SPLASH = 3;
+const DEAD_WEIGHT_DAMAGE = 3;
 
 // ── Phase: Draw complete ──────────────────────────────────────────────────────
 function handleDrawComplete(room, ws) {
@@ -49,9 +49,7 @@ function handleDrawComplete(room, ws) {
 
 // ── Phase: Placement submitted ────────────────────────────────────────────────
 function handlePlacementSubmit(room, ws, data) {
-  // lanes = array[3] of { id, role, offense, current_hp, ability } or null
   room.submissions[ws.userId] = data.lanes || [null, null, null];
-
   if (Object.keys(room.submissions).length >= 2) {
     resolveRound(room);
   }
@@ -65,13 +63,12 @@ function resolveRound(room) {
   const lanesA = room.submissions[wsA.userId] || [null, null, null];
   const lanesB = room.submissions[wsB.userId] || [null, null, null];
 
-  // Check for Blackout (disables all opponent abilities this round)
+  // Blackout: disables ALL opponent abilities
   const blackoutA = lanesA.some(c => c && c.ability === ABILITY.BLACKOUT);
   const blackoutB = lanesB.some(c => c && c.ability === ABILITY.BLACKOUT);
 
-  // Coordinated bonus: +2 offense per ally in arena sharing same role
+  // Coordinated: +2 offense per ally sharing same role
   function coordinatedBonus(card, allLanes) {
-    if (!card || card.ability !== ABILITY.COORDINATED) return 0;
     let count = 0;
     for (const c of allLanes) {
       if (c && c !== card && c.role === card.role) count++;
@@ -79,18 +76,24 @@ function resolveRound(room) {
     return count * 2;
   }
 
+  // Apply damage with Durable check; sets result.destroyed
+  function applyDamage(result, card, damage, jammed) {
+    result.current_hp -= damage;
+    if (!jammed && card.ability === ABILITY.DURABLE && result.current_hp <= 0) {
+      result.current_hp = 1;
+    }
+    result.destroyed = result.current_hp <= 0;
+  }
+
   const laneResults = [];
-  const extraDamageA = []; // [{ target_lane, damage }] from Overcharge
+  const extraDamageA = [];
   const extraDamageB = [];
 
   for (let i = 0; i < 3; i++) {
     const cardA = lanesA[i] ? { ...lanesA[i] } : null;
     const cardB = lanesB[i] ? { ...lanesB[i] } : null;
 
-    if (!cardA && !cardB) {
-      laneResults.push(null);
-      continue;
-    }
+    if (!cardA && !cardB) { laneResults.push(null); continue; }
 
     const resultA = cardA ? {
       id: cardA.id, pre_battle_hp: cardA.current_hp, current_hp: cardA.current_hp,
@@ -102,79 +105,132 @@ function resolveRound(room) {
     } : null;
 
     if (cardA && cardB) {
-      // Both cards present — fight
+      // ── Ability jam checks ─────────────────────────────────────────────────
       const abilityJammedA = blackoutB || (cardB.ability === ABILITY.JAM && !blackoutA);
       const abilityJammedB = blackoutA || (cardA.ability === ABILITY.JAM && !blackoutB);
 
-      // Effective offense (Overclock doubles, Coordinated adds per ally)
+      // ── Effective offense ──────────────────────────────────────────────────
       let offA = cardA.offense;
       let offB = cardB.offense;
 
-      if (!abilityJammedA && cardA.ability === ABILITY.OVERCLOCK) offA *= 2;
-      if (!abilityJammedB && cardB.ability === ABILITY.OVERCLOCK) offB *= 2;
-      if (!abilityJammedA && cardA.ability === ABILITY.COORDINATED) offA += coordinatedBonus(cardA, lanesA);
-      if (!abilityJammedB && cardB.ability === ABILITY.COORDINATED) offB += coordinatedBonus(cardB, lanesB);
+      if (!abilityJammedA && cardA.ability === ABILITY.OVERCLOCK)    offA *= 2;
+      if (!abilityJammedB && cardB.ability === ABILITY.OVERCLOCK)    offB *= 2;
+      if (!abilityJammedA && cardA.ability === ABILITY.COORDINATED)  offA += coordinatedBonus(cardA, lanesA);
+      if (!abilityJammedB && cardB.ability === ABILITY.COORDINATED)  offB += coordinatedBonus(cardB, lanesB);
 
-      // Type multipliers
+      // BROADCAST: other allied cards boost this card's offense by +2 each
+      for (let j = 0; j < 3; j++) {
+        if (j === i) continue;
+        if (lanesA[j] && lanesA[j].ability === ABILITY.BROADCAST && !blackoutB) offA += 2;
+        if (lanesB[j] && lanesB[j].ability === ABILITY.BROADCAST && !blackoutA) offB += 2;
+      }
+
+      // ── Type multipliers & armor ───────────────────────────────────────────
       const multA = typeMultiplier(cardA.role, cardB.role);
       const multB = typeMultiplier(cardB.role, cardA.role);
 
       let dmgToB = Math.floor(offA * multA);
       let dmgToA = Math.floor(offB * multB);
 
-      // Armor reduces incoming damage
       if (!abilityJammedB && cardB.ability === ABILITY.ARMOR) dmgToB = Math.max(0, dmgToB - ARMOR_REDUCTION);
       if (!abilityJammedA && cardA.ability === ABILITY.ARMOR) dmgToA = Math.max(0, dmgToA - ARMOR_REDUCTION);
 
-      // Apply damage
-      resultB.current_hp -= dmgToB;
-      resultA.current_hp -= dmgToA;
+      // ── INITIATIVE (First Strike) ──────────────────────────────────────────
+      const hasInitiativeA = !abilityJammedA && cardA.ability === ABILITY.INITIATIVE;
+      const hasInitiativeB = !abilityJammedB && cardB.ability === ABILITY.INITIATIVE;
 
-      // Durable: survive at 1 HP instead of dying
-      if (!abilityJammedB && cardB.ability === ABILITY.DURABLE && resultB.current_hp <= 0) resultB.current_hp = 1;
-      if (!abilityJammedA && cardA.ability === ABILITY.DURABLE && resultA.current_hp <= 0) resultA.current_hp = 1;
+      if (hasInitiativeA && !hasInitiativeB) {
+        // A strikes first; if B dies it never deals damage
+        applyDamage(resultB, cardB, dmgToB, abilityJammedB);
+        if (!resultB.destroyed) applyDamage(resultA, cardA, dmgToA, abilityJammedA);
+        resultA.ability_triggered = "Initiative";
+      } else if (hasInitiativeB && !hasInitiativeA) {
+        applyDamage(resultA, cardA, dmgToA, abilityJammedA);
+        if (!resultA.destroyed) applyDamage(resultB, cardB, dmgToB, abilityJammedB);
+        resultB.ability_triggered = "Initiative";
+      } else {
+        // Simultaneous (both or neither have Initiative)
+        applyDamage(resultB, cardB, dmgToB, abilityJammedB);
+        applyDamage(resultA, cardA, dmgToA, abilityJammedA);
+      }
 
-      const aWins = resultB.current_hp <= 0 && resultA.current_hp > 0;
-      const bWins = resultA.current_hp <= 0 && resultB.current_hp > 0;
+      // ── Post-damage abilities ──────────────────────────────────────────────
+      const aWins = !resultA.destroyed && resultB.destroyed;
+      const bWins = !resultB.destroyed && resultA.destroyed;
 
-      // Retaliate: loser deals fraction of offense back to winner
+      // RETALIATE: loser deals fraction of offense back to winner
       if (bWins && !abilityJammedA && cardA.ability === ABILITY.RETALIATE) {
         resultB.current_hp -= Math.floor(offA * RETALIATE_FRAC);
+        if (resultB.current_hp <= 0) { resultB.current_hp = 0; resultB.destroyed = true; }
         resultA.ability_triggered = "Retaliate";
       }
       if (aWins && !abilityJammedB && cardB.ability === ABILITY.RETALIATE) {
         resultA.current_hp -= Math.floor(offB * RETALIATE_FRAC);
+        if (resultA.current_hp <= 0) { resultA.current_hp = 0; resultA.destroyed = true; }
         resultB.ability_triggered = "Retaliate";
       }
 
-      // Dead Weight: loser reduces winner's offense permanently this round
+      // DEAD_WEIGHT: loser deals flat damage to the winner even in defeat
       if (bWins && !abilityJammedA && cardA.ability === ABILITY.DEAD_WEIGHT) {
-        // Broadcast to client that winning card is debuffed
+        resultB.current_hp -= DEAD_WEIGHT_DAMAGE;
+        if (resultB.current_hp <= 0) { resultB.current_hp = 0; resultB.destroyed = true; }
         resultA.ability_triggered = "Dead Weight";
-        // We can't modify future rounds here easily; flag it in result for client
-        resultB.dead_weight_hit = true;
       }
       if (aWins && !abilityJammedB && cardB.ability === ABILITY.DEAD_WEIGHT) {
+        resultA.current_hp -= DEAD_WEIGHT_DAMAGE;
+        if (resultA.current_hp <= 0) { resultA.current_hp = 0; resultA.destroyed = true; }
         resultB.ability_triggered = "Dead Weight";
-        resultA.dead_weight_hit = true;
       }
 
-      // Mark destroyed
-      resultA.destroyed = resultA.current_hp <= 0;
-      resultB.destroyed = resultB.current_hp <= 0;
+      // OVERCLOCK: self-destruct at end of round regardless of outcome
+      if (!abilityJammedA && cardA.ability === ABILITY.OVERCLOCK && !resultA.destroyed) {
+        resultA.destroyed = true; resultA.current_hp = 0;
+        resultA.ability_triggered = "Overclock";
+      }
+      if (!abilityJammedB && cardB.ability === ABILITY.OVERCLOCK && !resultB.destroyed) {
+        resultB.destroyed = true; resultB.current_hp = 0;
+        resultB.ability_triggered = "Overclock";
+      }
 
-      // Overcharge: winner picks an enemy card to deal bonus damage to
-      // We queue this; client will pick target, or server auto-targets lowest HP
-      if (aWins && !abilityJammedA && cardA.ability === ABILITY.OVERCHARGE) {
+      // EJECT: if destroyed, return to hand with 1 HP instead (runs after Overclock so Overclock beats Eject)
+      if (resultA.destroyed && !abilityJammedA && cardA.ability === ABILITY.EJECT) {
+        resultA.current_hp = 1; resultA.destroyed = false; resultA.ejected = true;
+        resultA.ability_triggered = "Eject";
+      }
+      if (resultB.destroyed && !abilityJammedB && cardB.ability === ABILITY.EJECT) {
+        resultB.current_hp = 1; resultB.destroyed = false; resultB.ejected = true;
+        resultB.ability_triggered = "Eject";
+      }
+
+      // Recompute winner flags after all damage adjustments
+      const aWinsFinal = !resultA.destroyed && resultB.destroyed;
+      const bWinsFinal = !resultB.destroyed && resultA.destroyed;
+
+      // OVERCHARGE: winner deals bonus damage to lowest-HP enemy
+      if (aWinsFinal && !abilityJammedA && cardA.ability === ABILITY.OVERCHARGE) {
         extraDamageA.push({ source_lane: i, damage: OVERCHARGE_BONUS });
         resultA.ability_triggered = "Overcharge";
       }
-      if (bWins && !abilityJammedB && cardB.ability === ABILITY.OVERCHARGE) {
+      if (bWinsFinal && !abilityJammedB && cardB.ability === ABILITY.OVERCHARGE) {
         extraDamageB.push({ source_lane: i, damage: OVERCHARGE_BONUS });
         resultB.ability_triggered = "Overcharge";
       }
 
-      // Volatile: destroyed card deals damage to all enemy lanes
+      // AFTERBURNER: winner splashes flat damage to all other opponent cards
+      if (aWinsFinal && !abilityJammedA && cardA.ability === ABILITY.AFTERBURNER) {
+        for (let j = 0; j < 3; j++) {
+          if (j !== i && lanesB[j]) extraDamageA.push({ source_lane: i, target_lane: j, damage: AFTERBURNER_SPLASH });
+        }
+        resultA.ability_triggered = "Afterburner";
+      }
+      if (bWinsFinal && !abilityJammedB && cardB.ability === ABILITY.AFTERBURNER) {
+        for (let j = 0; j < 3; j++) {
+          if (j !== i && lanesA[j]) extraDamageB.push({ source_lane: i, target_lane: j, damage: AFTERBURNER_SPLASH });
+        }
+        resultB.ability_triggered = "Afterburner";
+      }
+
+      // VOLATILE: destroyed card splashes half offense to all other enemy lanes
       if (resultA.destroyed && !abilityJammedA && cardA.ability === ABILITY.VOLATILE) {
         for (let j = 0; j < 3; j++) {
           if (j !== i && lanesB[j]) extraDamageA.push({ source_lane: i, target_lane: j, damage: Math.floor(offA * 0.5) });
@@ -188,7 +244,7 @@ function resolveRound(room) {
         resultB.ability_triggered = "Volatile";
       }
 
-      // Regenerate: survivor gains HP
+      // REGENERATE: survivor heals
       if (!resultA.destroyed && !abilityJammedA && cardA.ability === ABILITY.REGENERATE) {
         resultA.current_hp = Math.min(cardA.defense, resultA.current_hp + REGEN_AMOUNT);
         resultA.ability_triggered = "Regenerate";
@@ -198,62 +254,77 @@ function resolveRound(room) {
         resultB.ability_triggered = "Regenerate";
       }
 
-      // Salvage: destroyed card draws a card (flagged for client)
+      // SALVAGE: destroyed card grants owner an extra draw next round
       if (resultA.destroyed && !abilityJammedA && cardA.ability === ABILITY.SALVAGE) {
-        resultA.ability_triggered = "Salvage";
         resultA.salvage_draw = true;
+        resultA.ability_triggered = "Salvage";
       }
       if (resultB.destroyed && !abilityJammedB && cardB.ability === ABILITY.SALVAGE) {
-        resultB.ability_triggered = "Salvage";
         resultB.salvage_draw = true;
+        resultB.ability_triggered = "Salvage";
       }
 
-      // Overclock: card is destroyed at end of round regardless
-      if (!abilityJammedA && cardA.ability === ABILITY.OVERCLOCK && !resultA.destroyed) {
-        resultA.destroyed = true;
-        resultA.current_hp = 0;
-        resultA.ability_triggered = "Overclock";
+      // REDEPLOY: surviving (non-ejected) card returns to hand instead of deck bottom
+      if (!resultA.destroyed && !resultA.ejected && !abilityJammedA && cardA.ability === ABILITY.REDEPLOY) {
+        resultA.redeploy = true;
+        resultA.ability_triggered = "Redeploy";
       }
-      if (!abilityJammedB && cardB.ability === ABILITY.OVERCLOCK && !resultB.destroyed) {
-        resultB.destroyed = true;
-        resultB.current_hp = 0;
-        resultB.ability_triggered = "Overclock";
+      if (!resultB.destroyed && !resultB.ejected && !abilityJammedB && cardB.ability === ABILITY.REDEPLOY) {
+        resultB.redeploy = true;
+        resultB.ability_triggered = "Redeploy";
       }
 
-    } else if (cardA) {
-      // Only A has a card — unopposed
-      if (!resultA) laneResults.push(null);
     } else {
-      // Only B has a card — unopposed
-      if (!resultB) laneResults.push(null);
+      // ── Unopposed lane ─────────────────────────────────────────────────────
+      const card   = cardA || cardB;
+      const result = cardA ? resultA : resultB;
+      const jammed = cardA ? blackoutB : blackoutA;
+
+      // Overclock self-destructs even unopposed
+      if (!jammed && card.ability === ABILITY.OVERCLOCK) {
+        result.destroyed = true; result.current_hp = 0;
+        result.ability_triggered = "Overclock";
+      }
+      // Eject on self-destruct (Overclock case)
+      if (result.destroyed && !jammed && card.ability === ABILITY.EJECT) {
+        result.current_hp = 1; result.destroyed = false; result.ejected = true;
+        result.ability_triggered = "Eject";
+      }
+      // Redeploy: unopposed survivor returns to hand
+      if (!result.destroyed && !result.ejected && !jammed && card.ability === ABILITY.REDEPLOY) {
+        result.redeploy = true;
+        result.ability_triggered = "Redeploy";
+      }
     }
 
     laneResults.push({ player_card: resultA, opponent_card: resultB });
   }
 
-  // Apply Volatile / Overcharge splash damage (auto-target lowest HP enemy)
+  // ── Apply splash damage (Overcharge / Afterburner / Volatile) ────────────
   function applyExtra(extraList, victimResults) {
     for (const ex of extraList) {
       const tgt = ex.target_lane !== undefined
-        ? victimResults[ex.target_lane]
+        ? ex.target_lane
         : victimResults.reduce((best, r, idx) => {
             if (!r || r.destroyed) return best;
-            if (best === null || r.current_hp < victimResults[best].current_hp) return idx;
+            if (best === -1 || r.current_hp < victimResults[best].current_hp) return idx;
             return best;
-          }, null);
-      if (tgt !== null && victimResults[tgt] && !victimResults[tgt].destroyed) {
+          }, -1);
+      if (tgt !== -1 && victimResults[tgt] && !victimResults[tgt].destroyed) {
         victimResults[tgt].current_hp -= ex.damage;
-        if (victimResults[tgt].current_hp <= 0) victimResults[tgt].destroyed = true;
+        if (victimResults[tgt].current_hp <= 0) {
+          victimResults[tgt].current_hp = 0;
+          victimResults[tgt].destroyed = true;
+        }
       }
     }
   }
 
-  const playerCards    = laneResults.map(r => r ? r.player_card   : null);
-  const opponentCards  = laneResults.map(r => r ? r.opponent_card : null);
+  const playerCards   = laneResults.map(r => r ? r.player_card   : null);
+  const opponentCards = laneResults.map(r => r ? r.opponent_card : null);
   applyExtra(extraDamageA, opponentCards);
   applyExtra(extraDamageB, playerCards);
 
-  // Rebuild results with updated values
   for (let i = 0; i < 3; i++) {
     if (laneResults[i]) {
       laneResults[i].player_card   = playerCards[i];
@@ -261,16 +332,16 @@ function resolveRound(room) {
     }
   }
 
-  // Tally scrap
+  // ── Tally scrap ───────────────────────────────────────────────────────────
   const scrapA = room.scrapA = (room.scrapA || 0)
-    + laneResults.filter(r => r && r.player_card && r.player_card.destroyed).length;
+    + laneResults.filter(r => r && r.player_card   && r.player_card.destroyed).length;
   const scrapB = room.scrapB = (room.scrapB || 0)
     + laneResults.filter(r => r && r.opponent_card && r.opponent_card.destroyed).length;
 
   const gameOverA = scrapA >= 20;
   const gameOverB = scrapB >= 20;
 
-  // Send mirrored results to each player
+  // ── Send mirrored results to each player ──────────────────────────────────
   const resultForA = {
     battle_round: room.round,
     lanes: laneResults,
@@ -281,7 +352,9 @@ function resolveRound(room) {
   };
   const resultForB = {
     battle_round: room.round,
-    lanes: laneResults.map(r => r ? { player_card: r.opponent_card, opponent_card: r.player_card } : null),
+    lanes: laneResults.map(r => r
+      ? { player_card: r.opponent_card, opponent_card: r.player_card }
+      : null),
     player_scrap_count:   scrapB,
     opponent_scrap_count: scrapA,
     game_over: gameOverA || gameOverB,
@@ -297,7 +370,7 @@ function resolveRound(room) {
     return;
   }
 
-  room.submissions = {};
+  room.submissions  = {};
   room.cleanupReady = 0;
 }
 
