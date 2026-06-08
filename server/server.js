@@ -4,7 +4,7 @@ const http = require("http");
 const { WebSocketServer } = require("ws");
 const { verifyToken } = require("./auth");
 const { enqueue, dequeue, getRoom, deleteRoom, broadcastToRoom } = require("./rooms");
-const { handleDrawComplete, handlePlaySubmit, handleCleanupComplete } = require("./phase");
+const { handleDrawComplete, handlePlacementSubmit, handleCleanupComplete } = require("./phase");
 
 const PORT = process.env.PORT || 3000;
 
@@ -22,7 +22,7 @@ wss.on("connection", (ws, req) => {
   ws.userId = null;
   ws.roomId = null;
 
-  ws.on("message", (raw) => {
+  ws.on("message", async (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
 
@@ -35,7 +35,7 @@ wss.on("connection", (ws, req) => {
         return;
       }
 
-      const payload = verifyToken(data.token);
+      const payload = await verifyToken(data.token);
       if (!payload) {
         ws.send(JSON.stringify({ type: "AUTH_ERROR", data: { error: "Invalid token" } }));
         ws.close();
@@ -69,9 +69,9 @@ wss.on("connection", (ws, req) => {
     if (!room) return;
 
     switch (type) {
-      case "PHASE_DRAW_COMPLETE":    handleDrawComplete(room, ws);          break;
-      case "PHASE_PLAY_SUBMIT":      handlePlaySubmit(room, ws, data);      break;
-      case "PHASE_CLEANUP_COMPLETE": handleCleanupComplete(room);           break;
+      case "PHASE_DRAW_COMPLETE":       handleDrawComplete(room, ws);              break;
+      case "PHASE_PLACEMENT_SUBMIT":    handlePlacementSubmit(room, ws, data);     break;
+      case "PHASE_CLEANUP_COMPLETE":    handleCleanupComplete(room);               break;
     }
   });
 
