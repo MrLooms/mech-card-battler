@@ -50,9 +50,11 @@ function createRoom(wsA, wsB) {
   wsA.send(JSON.stringify({ type: "MATCH_FOUND", data: { ...matchData, player_index: 0 } }));
   wsB.send(JSON.stringify({ type: "MATCH_FOUND", data: { ...matchData, player_index: 1 } }));
 
-  // Start the first draw phase
-  broadcastToRoom(room, { type: "PHASE_BEGIN", data: { phase: "DRAW", round: 1 } });
-  room.phase = "DRAW";
+  // Delay PHASE_BEGIN so the clients have time to transition into rm_battle
+  setTimeout(() => {
+    broadcastToRoom(room, { type: "PHASE_BEGIN", data: { phase: "DRAW", battle_round: 1 } });
+    room.phase = "DRAW";
+  }, 800);
 
   console.log(`Room created: ${roomId}`);
 }
