@@ -93,11 +93,11 @@ function resolveRound(room) {
     }
 
     const resultA = cardA ? {
-      id: cardA.id, current_hp: cardA.current_hp,
+      id: cardA.id, pre_battle_hp: cardA.current_hp, current_hp: cardA.current_hp,
       destroyed: false, ability_triggered: null,
     } : null;
     const resultB = cardB ? {
-      id: cardB.id, current_hp: cardB.current_hp,
+      id: cardB.id, pre_battle_hp: cardB.current_hp, current_hp: cardB.current_hp,
       destroyed: false, ability_triggered: null,
     } : null;
 
