@@ -22,7 +22,7 @@ wss.on("connection", (ws, req) => {
   ws.userId = null;
   ws.roomId = null;
 
-  ws.on("message", async (raw) => {
+  ws.on("message", (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
 
@@ -35,7 +35,7 @@ wss.on("connection", (ws, req) => {
         return;
       }
 
-      const payload = await verifyToken(data.token);
+      const payload = verifyToken(data.token);
       if (!payload) {
         ws.send(JSON.stringify({ type: "AUTH_ERROR", data: { error: "Invalid token" } }));
         ws.close();

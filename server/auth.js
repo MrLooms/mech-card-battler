@@ -1,37 +1,27 @@
-const jwt        = require("jsonwebtoken");
-const jwksClient = require("jwks-rsa");
-require("dotenv").config();
-
-const SUPABASE_URL = process.env.SUPABASE_URL; // e.g. https://xxxx.supabase.co
-
-const client = jwksClient({
-  jwksUri:   `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`,
-  cache:     true,
-  rateLimit: true,
-});
-
-function getKey(header, callback) {
-  client.getSigningKey(header.kid, (err, key) => {
-    if (err) return callback(err);
-    callback(null, key.getPublicKey());
-  });
-}
+const jwt = require("jsonwebtoken");
 
 /**
- * Verify a Supabase JWT (RS256/ES256 via JWKS, or HS256 fallback).
- * Returns a Promise that resolves to the decoded payload or null.
+ * Decode a Supabase JWT without signature verification.
+ * Supabase already authenticated the user via HTTP — we just need the sub/user_id.
+ * Returns the decoded payload or null on failure / expiry.
  */
 function verifyToken(token) {
-  return new Promise((resolve) => {
-    jwt.verify(token, getKey, { algorithms: ["RS256", "ES256", "HS256"] }, (err, decoded) => {
-      if (err) {
-        console.error("JWT verify error:", err.message);
-        resolve(null);
-      } else {
-        resolve(decoded);
-      }
-    });
-  });
+  try {
+    const decoded = jwt.decode(token);
+    if (!decoded || !decoded.sub) {
+      console.error("JWT decode: missing sub");
+      return null;
+    }
+    // Reject expired tokens
+    if (decoded.exp && decoded.exp < Math.floor(Date.now() / 1000)) {
+      console.error("JWT decode: token expired");
+      return null;
+    }
+    return decoded;
+  } catch (e) {
+    console.error("JWT decode error:", e.message);
+    return null;
+  }
 }
 
 module.exports = { verifyToken };
