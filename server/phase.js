@@ -25,14 +25,17 @@ const ABILITY = {
   JAM: 5, REDEPLOY: 6, SALVAGE: 7, OVERCLOCK: 8, BROADCAST: 9,
   EJECT: 10, DEAD_WEIGHT: 11, BLACKOUT: 12, AFTERBURNER: 13,
   DURABLE: 14, VOLATILE: 15, COORDINATED: 16, INITIATIVE: 17,
+  MOMENTUM: 18, FIELD_REPAIR: 22, REFLECT: 24, RALLY: 25,
 };
 
-const ARMOR_REDUCTION    = 2;
-const REGEN_AMOUNT       = 2;
-const RETALIATE_FRAC     = 0.5;
-const OVERCHARGE_BONUS   = 3;
-const AFTERBURNER_SPLASH = 3;
-const DEAD_WEIGHT_DAMAGE = 3;
+const ARMOR_REDUCTION      = 2;
+const REGEN_AMOUNT         = 2;
+const RETALIATE_FRAC       = 0.5;
+const OVERCHARGE_BONUS     = 3;
+const AFTERBURNER_SPLASH   = 3;
+const DEAD_WEIGHT_DAMAGE   = 3;
+const FIELD_REPAIR_AMOUNT  = 3;
+const REFLECT_FRAC         = 0.25;
 
 // ── Phase: Draw complete ──────────────────────────────────────────────────────
 function handleDrawComplete(room, ws) {
@@ -111,6 +114,11 @@ function resolveRound(room) {
     result.destroyed = result.current_hp <= 0;
   }
 
+  // RALLY: track enemies destroyed by each side in preceding lanes this round.
+  // A card with Rally gains +1 ATK per already-destroyed opponent before its own combat.
+  let rallyBonusA = 0; // enemies B destroyed by A in lanes 0..(i-1)
+  let rallyBonusB = 0; // enemies A destroyed by B in lanes 0..(i-1)
+
   const laneResults = [];
 
   for (let i = 0; i < 3; i++) {
@@ -184,6 +192,14 @@ function resolveRound(room) {
       if (!abilityJammedA && origA.ability === ABILITY.COORDINATED) offA += coordinatedBonus(origA, lanesA);
       if (!abilityJammedB && origB.ability === ABILITY.COORDINATED) offB += coordinatedBonus(origB, lanesB);
 
+      // RALLY: +1 ATK per enemy already destroyed in earlier lanes this round
+      if (!abilityJammedA && origA.ability === ABILITY.RALLY && rallyBonusA > 0) {
+        offA += rallyBonusA; resultA.ability_triggered = "Rally";
+      }
+      if (!abilityJammedB && origB.ability === ABILITY.RALLY && rallyBonusB > 0) {
+        offB += rallyBonusB; resultB.ability_triggered = "Rally";
+      }
+
       // BROADCAST: a Broadcast card gets +2 offense for each OTHER ally Broadcast card deployed.
       // Only the Broadcast card itself is boosted — non-Broadcast cards are unaffected.
       if (!blackoutB && origA.ability === ABILITY.BROADCAST) {
@@ -214,6 +230,10 @@ function resolveRound(room) {
       const hasInitiativeA = !abilityJammedA && origA.ability === ABILITY.INITIATIVE;
       const hasInitiativeB = !abilityJammedB && origB.ability === ABILITY.INITIATIVE;
 
+      // Record HP before damage exchange for Reflect calculation
+      const hpAbeforeCombat = resultA.current_hp;
+      const hpBbeforeCombat = resultB.current_hp;
+
       if (hasInitiativeA && !hasInitiativeB) {
         applyDamage(resultB, origB, dmgToB, abilityJammedB);
         if (!resultB.destroyed) applyDamage(resultA, origA, dmgToA, abilityJammedA);
@@ -225,6 +245,24 @@ function resolveRound(room) {
       } else {
         applyDamage(resultB, origB, dmgToB, abilityJammedB);
         applyDamage(resultA, origA, dmgToA, abilityJammedA);
+      }
+
+      // REFLECT: card A reflects 25% of the damage it actually took back to B, and vice versa
+      const actualDmgToA = Math.max(0, hpAbeforeCombat - resultA.current_hp);
+      const actualDmgToB = Math.max(0, hpBbeforeCombat - resultB.current_hp);
+      if (!abilityJammedA && origA.ability === ABILITY.REFLECT && actualDmgToA > 0) {
+        const reflectDmg = Math.floor(actualDmgToA * REFLECT_FRAC);
+        if (reflectDmg > 0) {
+          applyDamage(resultB, origB, reflectDmg, abilityJammedB);
+          resultA.ability_triggered = "Reflect";
+        }
+      }
+      if (!abilityJammedB && origB.ability === ABILITY.REFLECT && actualDmgToB > 0) {
+        const reflectDmg = Math.floor(actualDmgToB * REFLECT_FRAC);
+        if (reflectDmg > 0) {
+          applyDamage(resultA, origA, reflectDmg, abilityJammedA);
+          resultB.ability_triggered = "Reflect";
+        }
       }
 
       // RETALIATE: loser deals fraction of offense back to winner
@@ -328,6 +366,16 @@ function resolveRound(room) {
         resultB.ability_triggered = "Regenerate";
       }
 
+      // FIELD_REPAIR: survivor heals 3 HP at end of this round
+      if (!resultA.destroyed && !abilityJammedA && origA.ability === ABILITY.FIELD_REPAIR) {
+        resultA.current_hp = Math.min(origA.defense, resultA.current_hp + FIELD_REPAIR_AMOUNT);
+        resultA.ability_triggered = "Field Repair";
+      }
+      if (!resultB.destroyed && !abilityJammedB && origB.ability === ABILITY.FIELD_REPAIR) {
+        resultB.current_hp = Math.min(origB.defense, resultB.current_hp + FIELD_REPAIR_AMOUNT);
+        resultB.ability_triggered = "Field Repair";
+      }
+
       // SALVAGE: destroyed card grants owner an extra draw
       if (resultA.destroyed && !abilityJammedA && origA.ability === ABILITY.SALVAGE) {
         resultA.salvage_draw = true; resultA.ability_triggered = "Salvage";
@@ -371,10 +419,19 @@ function resolveRound(room) {
         if (!jammed && oCard.ability === ABILITY.BLACKOUT) {
           result.ability_triggered = "Blackout";
         }
+        // FIELD_REPAIR: unopposed survivor heals 3 HP
+        if (!result.destroyed && !jammed && oCard.ability === ABILITY.FIELD_REPAIR) {
+          result.current_hp = Math.min(oCard.defense, result.current_hp + FIELD_REPAIR_AMOUNT);
+          result.ability_triggered = "Field Repair";
+        }
       }
     }
 
     laneResults.push({ player_card: resultA, opponent_card: resultB });
+
+    // Update Rally running counters for subsequent lanes
+    if (resultB && resultB.destroyed) rallyBonusA++;
+    if (resultA && resultA.destroyed) rallyBonusB++;
   }
 
   // ── Tally scrap ───────────────────────────────────────────────────────────
