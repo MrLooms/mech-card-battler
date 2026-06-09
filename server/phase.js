@@ -121,19 +121,38 @@ function resolveRound(room) {
 
     // Build result stubs (pre-killed cards are already destroyed)
     const resultA = origA ? {
-      id: origA.id,
-      pre_battle_hp: hpA[i] !== null ? hpA[i] : origA.current_hp,
-      current_hp:    hpA[i] !== null ? hpA[i] : origA.current_hp,
-      destroyed:     prekilledA[i],
+      // Template fields — passed through so opponent can display the card
+      id:           origA.id,
+      name:         origA.display_name || origA.name || "",
+      display_name: origA.display_name || origA.name || "",
+      model_code:   origA.model_code || "",
+      role:         origA.role,
+      role_id:      origA.role_id !== undefined ? origA.role_id : 0,
+      rarity:       origA.rarity !== undefined ? origA.rarity : 0,
+      offense:      origA.offense,
+      defense:      origA.defense,
+      ability:      origA.ability,
+      // Combat result fields
+      pre_battle_hp:     hpA[i] !== null ? hpA[i] : origA.current_hp,
+      current_hp:        hpA[i] !== null ? hpA[i] : origA.current_hp,
+      destroyed:         prekilledA[i],
       ability_triggered: prekilledA[i] ? "Splash" : null,
-      // Salvage fires even when killed by splash from an earlier lane
       salvage_draw: prekilledA[i] && origA.ability === ABILITY.SALVAGE && !blackoutB,
     } : null;
     const resultB = origB ? {
-      id: origB.id,
-      pre_battle_hp: hpB[i] !== null ? hpB[i] : origB.current_hp,
-      current_hp:    hpB[i] !== null ? hpB[i] : origB.current_hp,
-      destroyed:     prekilledB[i],
+      id:           origB.id,
+      name:         origB.display_name || origB.name || "",
+      display_name: origB.display_name || origB.name || "",
+      model_code:   origB.model_code || "",
+      role:         origB.role,
+      role_id:      origB.role_id !== undefined ? origB.role_id : 0,
+      rarity:       origB.rarity !== undefined ? origB.rarity : 0,
+      offense:      origB.offense,
+      defense:      origB.defense,
+      ability:      origB.ability,
+      pre_battle_hp:     hpB[i] !== null ? hpB[i] : origB.current_hp,
+      current_hp:        hpB[i] !== null ? hpB[i] : origB.current_hp,
+      destroyed:         prekilledB[i],
       ability_triggered: prekilledB[i] ? "Splash" : null,
       salvage_draw: prekilledB[i] && origB.ability === ABILITY.SALVAGE && !blackoutA,
     } : null;
