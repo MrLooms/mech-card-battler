@@ -1,3 +1,5 @@
+const { initBot, botDrawToHand } = require("./bot");
+
 // Active match rooms: roomId -> { players: [ws, ws], state: {} }
 const rooms = new Map();
 
@@ -60,6 +62,50 @@ function createRoom(wsA, wsB) {
 }
 
 /**
+ * Create a single-player (vs AI) room for one real player.
+ * The bot acts as the second player entirely server-side.
+ */
+function createAiRoom(ws) {
+  const roomId = `ai_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  // Stub WebSocket for the bot — absorbs sends silently
+  const botWs = {
+    userId:    "bot",
+    username:  "AI Opponent",
+    roomId:    roomId,
+    readyState: 1,
+    send:      () => {},
+  };
+
+  const room = {
+    id:          roomId,
+    players:     [ws, botWs],
+    phase:       "DRAW",
+    round:       1,
+    submissions: {},
+  };
+
+  // Initialise bot deck / hand / survivors on the room
+  initBot(room);
+  botDrawToHand(room);
+
+  rooms.set(roomId, room);
+  ws.roomId = roomId;
+
+  ws.send(JSON.stringify({
+    type: "MATCH_FOUND",
+    data: { room_id: roomId, player_index: 0, vs_ai: true },
+  }));
+
+  setTimeout(() => {
+    broadcastToRoom(room, { type: "PHASE_BEGIN", data: { phase: "DRAW", battle_round: 1 } });
+    room.phase = "DRAW";
+  }, 800);
+
+  console.log(`AI room created: ${roomId} for ${ws.username}`);
+}
+
+/**
  * Send a message to all players in a room.
  */
 function broadcastToRoom(room, msg) {
@@ -83,4 +129,4 @@ function deleteRoom(roomId) {
   rooms.delete(roomId);
 }
 
-module.exports = { enqueue, dequeue, getRoom, deleteRoom, broadcastToRoom };
+module.exports = { enqueue, dequeue, createAiRoom, getRoom, deleteRoom, broadcastToRoom };

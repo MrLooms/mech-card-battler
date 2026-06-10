@@ -1,4 +1,5 @@
 const { broadcastToRoom } = require("./rooms");
+const { botPickLanes, botApplyResults, botDrawToHand } = require("./bot");
 
 // ── Type chart ────────────────────────────────────────────────────────────────
 const BEATS = {
@@ -9,18 +10,25 @@ const BEATS = {
   Recon:     ["Artillery", "Shield"],
 };
 
+// GML sends role as an integer enum (0-4); strings also accepted for flexibility.
+const ROLE_NAMES = {
+  0: "Brawler", 1: "Artillery", 2: "Shield", 3: "Scout", 4: "Recon",
+};
+
 function typeMultiplier(attackerRole, defenderRole) {
-  const beats = BEATS[attackerRole] || [];
-  if (beats.includes(defenderRole)) return 2;
+  // Normalise integer or string roles to string keys
+  const a = ROLE_NAMES[attackerRole] || attackerRole;
+  const d = ROLE_NAMES[defenderRole] || defenderRole;
+  const beats = BEATS[a] || [];
+  if (beats.includes(d)) return 2;
   for (const [role, beaten] of Object.entries(BEATS)) {
-    if (role === attackerRole) continue;
-    if (beaten.includes(attackerRole) && role === defenderRole) return 0.5;
+    if (role === a) continue;
+    if (beaten.includes(a) && role === d) return 0.5;
   }
   return 1;
 }
 
 // ── Ability constants (match GML ABILITY enum order) ─────────────────────────
-// Only active abilities listed; removed ones kept as numeric refs for compat.
 const ABILITY = {
   NONE: 0, ARMOR: 1, JAM: 5, EJECT: 10, BLACKOUT: 12,
   DURABLE: 14, VOLATILE: 15, COORDINATED: 16, INITIATIVE: 17,
@@ -38,7 +46,6 @@ function cardHasAbility(card, ability) {
 }
 
 // ── Accumulate triggered ability names (handles dual-ability cards) ───────────
-// Appends name to result.ability_triggered instead of overwriting.
 function addTriggered(result, name) {
   if (!result.ability_triggered || result.ability_triggered === null) {
     result.ability_triggered = name;
@@ -49,8 +56,10 @@ function addTriggered(result, name) {
 
 // ── Phase: Draw complete ──────────────────────────────────────────────────────
 function handleDrawComplete(room, ws) {
+  // AI room: human ready counts as both ready
+  const needed = room.isAiRoom ? 1 : 2;
   room.drawReady = (room.drawReady || 0) + 1;
-  if (room.drawReady >= 2) {
+  if (room.drawReady >= needed) {
     room.drawReady = 0;
     room.phase = "PLACEMENT";
     broadcastToRoom(room, {
@@ -63,6 +72,12 @@ function handleDrawComplete(room, ws) {
 // ── Phase: Placement submitted ────────────────────────────────────────────────
 function handlePlacementSubmit(room, ws, data) {
   room.submissions[ws.userId] = data.lanes || [null, null, null];
+
+  // AI room: generate bot lanes immediately when human submits
+  if (room.isAiRoom && !room.submissions["bot"]) {
+    room.submissions["bot"] = botPickLanes(room);
+  }
+
   if (Object.keys(room.submissions).length >= 2) {
     resolveRound(room);
   }
@@ -97,9 +112,7 @@ function resolveRound(room) {
   }
 
   // VOLATILE: splash to ALL enemy lanes — past, present, and future.
-  // pastSide: which slot in laneResults holds the enemy card ('player' or 'opponent').
   function splashVolatile(hp, prekilled, lanes, fromLane, damage, winnerResult, pastSide) {
-    // Past lanes (already resolved) — hit surviving enemy cards retroactively
     for (let j = 0; j < fromLane; j++) {
       if (!laneResults[j]) continue;
       const pastCard = pastSide === 'player'
@@ -107,25 +120,16 @@ function resolveRound(room) {
         : laneResults[j].opponent_card;
       if (pastCard && !pastCard.destroyed) {
         pastCard.current_hp = Math.max(0, pastCard.current_hp - damage);
-        if (pastCard.current_hp <= 0) {
-          pastCard.current_hp = 0;
-          pastCard.destroyed  = true;
-        }
+        if (pastCard.current_hp <= 0) { pastCard.current_hp = 0; pastCard.destroyed = true; }
       }
     }
-    // Current lane winner
     if (winnerResult && !winnerResult.destroyed) {
       winnerResult.current_hp = Math.max(0, winnerResult.current_hp - damage);
-      if (winnerResult.current_hp <= 0) {
-        winnerResult.current_hp = 0;
-        winnerResult.destroyed  = true;
-      }
+      if (winnerResult.current_hp <= 0) { winnerResult.current_hp = 0; winnerResult.destroyed = true; }
     }
-    // Future lanes
     splashFutureLanes(hp, prekilled, lanes, fromLane, damage);
   }
 
-  // Coordinated: +2 offense per ally in same role
   function coordinatedBonus(card, allLanes) {
     let count = 0;
     for (const c of allLanes) {
@@ -134,7 +138,6 @@ function resolveRound(room) {
     return count * 2;
   }
 
-  // Apply damage with DURABLE check
   function applyDamage(result, card, damage, jammed) {
     result.current_hp -= damage;
     if (!jammed && cardHasAbility(card, ABILITY.DURABLE) && result.current_hp <= 0) {
@@ -215,7 +218,6 @@ function resolveRound(room) {
       if (!abilityJammedB && cardHasAbility(origB, ABILITY.ARMOR)) dmgToB = Math.max(0, dmgToB - ARMOR_REDUCTION);
       if (!abilityJammedA && cardHasAbility(origA, ABILITY.ARMOR)) dmgToA = Math.max(0, dmgToA - ARMOR_REDUCTION);
 
-      // INITIATIVE: first strike — opponent can't retaliate if destroyed
       const hasInitiativeA = !abilityJammedA && cardHasAbility(origA, ABILITY.INITIATIVE);
       const hasInitiativeB = !abilityJammedB && cardHasAbility(origB, ABILITY.INITIATIVE);
 
@@ -235,7 +237,6 @@ function resolveRound(room) {
         applyDamage(resultA, origA, dmgToA, abilityJammedA);
       }
 
-      // REFLECT: reflect a fraction of damage taken back to attacker
       const actualDmgToA = Math.max(0, hpAbeforeCombat - resultA.current_hp);
       const actualDmgToB = Math.max(0, hpBbeforeCombat - resultB.current_hp);
       if (!abilityJammedA && cardHasAbility(origA, ABILITY.REFLECT) && actualDmgToA > 0) {
@@ -253,7 +254,6 @@ function resolveRound(room) {
         }
       }
 
-      // EJECT: destroyed card returns to hand at 1 HP
       if (resultA.destroyed && !abilityJammedA && cardHasAbility(origA, ABILITY.EJECT)) {
         resultA.current_hp = 1; resultA.destroyed = false; resultA.ejected = true;
         addTriggered(resultA, "Eject");
@@ -266,19 +266,15 @@ function resolveRound(room) {
       const aWinsFinal = !resultA.destroyed && resultB.destroyed;
       const bWinsFinal = !resultB.destroyed && resultA.destroyed;
 
-      // VOLATILE: destroyed card explodes against ALL enemy lanes (winner + future)
       if (resultA.destroyed && !abilityJammedA && cardHasAbility(origA, ABILITY.VOLATILE)) {
-        // A explodes — hits all of B's lanes; B's past cards are 'opponent_card' in laneResults
         splashVolatile(hpB, prekilledB, lanesB, i, Math.floor(offA * 0.5), bWinsFinal ? resultB : null, 'opponent');
         addTriggered(resultA, "Volatile");
       }
       if (resultB.destroyed && !abilityJammedB && cardHasAbility(origB, ABILITY.VOLATILE)) {
-        // B explodes — hits all of A's lanes; A's past cards are 'player_card' in laneResults
         splashVolatile(hpA, prekilledA, lanesA, i, Math.floor(offB * 0.5), aWinsFinal ? resultA : null, 'player');
         addTriggered(resultB, "Volatile");
       }
 
-      // FIELD_REPAIR: survivor heals at end of round
       if (!resultA.destroyed && !abilityJammedA && cardHasAbility(origA, ABILITY.FIELD_REPAIR)) {
         resultA.current_hp = Math.min(origA.defense, resultA.current_hp + FIELD_REPAIR_AMOUNT);
         addTriggered(resultA, "Field Repair");
@@ -308,20 +304,28 @@ function resolveRound(room) {
     laneResults.push({ player_card: resultA, opponent_card: resultB });
   }
 
+  // ── Update bot state from results ─────────────────────────────────────────
+  if (room.isAiRoom) {
+    botApplyResults(room, laneResults);
+  }
+
   // ── Tally scrap ───────────────────────────────────────────────────────────
   const scrapA = room.scrapA = (room.scrapA || 0)
     + laneResults.filter(r => r && r.player_card   && r.player_card.destroyed).length;
   const scrapB = room.scrapB = (room.scrapB || 0)
     + laneResults.filter(r => r && r.opponent_card && r.opponent_card.destroyed).length;
 
+  // For AI rooms, bot scrap count overrides the automatic tally
+  const effectiveScrapB = room.isAiRoom ? room.botScrap : scrapB;
+
   const gameOverA = scrapA >= 20;
-  const gameOverB = scrapB >= 20;
+  const gameOverB = effectiveScrapB >= 20;
 
   const resultForA = {
     battle_round:         room.round,
     lanes:                laneResults,
     player_scrap_count:   scrapA,
-    opponent_scrap_count: scrapB,
+    opponent_scrap_count: effectiveScrapB,
     game_over:            gameOverA || gameOverB,
     result:               gameOverA ? "loss" : gameOverB ? "win" : null,
   };
@@ -330,7 +334,7 @@ function resolveRound(room) {
     lanes:                laneResults.map(r => r
       ? { player_card: r.opponent_card, opponent_card: r.player_card }
       : null),
-    player_scrap_count:   scrapB,
+    player_scrap_count:   effectiveScrapB,
     opponent_scrap_count: scrapA,
     game_over:            gameOverA || gameOverB,
     result:               gameOverB ? "loss" : gameOverA ? "win" : null,
@@ -351,11 +355,14 @@ function resolveRound(room) {
 
 // ── Phase: Cleanup ack ────────────────────────────────────────────────────────
 function handleCleanupComplete(room) {
+  const needed = room.isAiRoom ? 1 : 2;
   room.cleanupReady = (room.cleanupReady || 0) + 1;
-  if (room.cleanupReady >= 2) {
+  if (room.cleanupReady >= needed) {
     room.cleanupReady = 0;
     room.round++;
     room.phase = "DRAW";
+    // Bot draws for the new round before PHASE_BEGIN goes out
+    if (room.isAiRoom) botDrawToHand(room);
     broadcastToRoom(room, {
       type: "PHASE_BEGIN",
       data: { phase: "DRAW", battle_round: room.round },

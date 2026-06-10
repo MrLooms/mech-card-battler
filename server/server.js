@@ -3,7 +3,7 @@ require("dotenv").config();
 const http = require("http");
 const { WebSocketServer } = require("ws");
 const { verifyToken } = require("./auth");
-const { enqueue, dequeue, getRoom, deleteRoom, broadcastToRoom } = require("./rooms");
+const { enqueue, dequeue, createAiRoom, getRoom, deleteRoom, broadcastToRoom } = require("./rooms");
 const { handleDrawComplete, handlePlacementSubmit, handleCleanupComplete } = require("./phase");
 
 const PORT = process.env.PORT || 3000;
@@ -61,8 +61,9 @@ wss.on("connection", (ws, req) => {
     }
 
     // ── Matchmaking ────────────────────────────────────────────
-    if (type === "MATCH_QUEUE")  { enqueue(ws); return; }
-    if (type === "MATCH_CANCEL") { dequeue(ws); return; }
+    if (type === "MATCH_QUEUE")  { enqueue(ws);      return; }
+    if (type === "MATCH_AI")     { createAiRoom(ws); return; }
+    if (type === "MATCH_CANCEL") { dequeue(ws);      return; }
 
     // ── In-game messages ───────────────────────────────────────
     const room = ws.roomId ? getRoom(ws.roomId) : null;
