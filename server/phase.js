@@ -37,6 +37,16 @@ function cardHasAbility(card, ability) {
       || (card.ability_2 != null && card.ability_2 === ability);
 }
 
+// ── Accumulate triggered ability names (handles dual-ability cards) ───────────
+// Appends name to result.ability_triggered instead of overwriting.
+function addTriggered(result, name) {
+  if (!result.ability_triggered || result.ability_triggered === null) {
+    result.ability_triggered = name;
+  } else if (result.ability_triggered !== "Splash" && result.ability_triggered !== name) {
+    result.ability_triggered = result.ability_triggered + " + " + name;
+  }
+}
+
 // ── Phase: Draw complete ──────────────────────────────────────────────────────
 function handleDrawComplete(room, ws) {
   room.drawReady = (room.drawReady || 0) + 1;
@@ -185,10 +195,10 @@ function resolveRound(room) {
       const abilityJammedA = blackoutB || (cardHasAbility(origB, ABILITY.JAM) && !blackoutA);
       const abilityJammedB = blackoutA || (cardHasAbility(origA, ABILITY.JAM) && !blackoutB);
 
-      if (!abilityJammedA && cardHasAbility(origA, ABILITY.JAM))      resultA.ability_triggered = "Jam";
-      if (!abilityJammedB && cardHasAbility(origB, ABILITY.JAM))      resultB.ability_triggered = "Jam";
-      if (!abilityJammedA && cardHasAbility(origA, ABILITY.BLACKOUT)) resultA.ability_triggered = "Blackout";
-      if (!abilityJammedB && cardHasAbility(origB, ABILITY.BLACKOUT)) resultB.ability_triggered = "Blackout";
+      if (!abilityJammedA && cardHasAbility(origA, ABILITY.JAM))      addTriggered(resultA, "Jam");
+      if (!abilityJammedB && cardHasAbility(origB, ABILITY.JAM))      addTriggered(resultB, "Jam");
+      if (!abilityJammedA && cardHasAbility(origA, ABILITY.BLACKOUT)) addTriggered(resultA, "Blackout");
+      if (!abilityJammedB && cardHasAbility(origB, ABILITY.BLACKOUT)) addTriggered(resultB, "Blackout");
 
       let offA = origA.offense;
       let offB = origB.offense;
@@ -215,11 +225,11 @@ function resolveRound(room) {
       if (hasInitiativeA && !hasInitiativeB) {
         applyDamage(resultB, origB, dmgToB, abilityJammedB);
         if (!resultB.destroyed) applyDamage(resultA, origA, dmgToA, abilityJammedA);
-        resultA.ability_triggered = "Initiative";
+        addTriggered(resultA, "Initiative");
       } else if (hasInitiativeB && !hasInitiativeA) {
         applyDamage(resultA, origA, dmgToA, abilityJammedA);
         if (!resultA.destroyed) applyDamage(resultB, origB, dmgToB, abilityJammedB);
-        resultB.ability_triggered = "Initiative";
+        addTriggered(resultB, "Initiative");
       } else {
         applyDamage(resultB, origB, dmgToB, abilityJammedB);
         applyDamage(resultA, origA, dmgToA, abilityJammedA);
@@ -232,25 +242,25 @@ function resolveRound(room) {
         const reflectDmg = Math.floor(actualDmgToA * REFLECT_FRAC);
         if (reflectDmg > 0) {
           applyDamage(resultB, origB, reflectDmg, abilityJammedB);
-          resultA.ability_triggered = "Reflect";
+          addTriggered(resultA, "Reflect");
         }
       }
       if (!abilityJammedB && cardHasAbility(origB, ABILITY.REFLECT) && actualDmgToB > 0) {
         const reflectDmg = Math.floor(actualDmgToB * REFLECT_FRAC);
         if (reflectDmg > 0) {
           applyDamage(resultA, origA, reflectDmg, abilityJammedA);
-          resultB.ability_triggered = "Reflect";
+          addTriggered(resultB, "Reflect");
         }
       }
 
       // EJECT: destroyed card returns to hand at 1 HP
       if (resultA.destroyed && !abilityJammedA && cardHasAbility(origA, ABILITY.EJECT)) {
         resultA.current_hp = 1; resultA.destroyed = false; resultA.ejected = true;
-        resultA.ability_triggered = "Eject";
+        addTriggered(resultA, "Eject");
       }
       if (resultB.destroyed && !abilityJammedB && cardHasAbility(origB, ABILITY.EJECT)) {
         resultB.current_hp = 1; resultB.destroyed = false; resultB.ejected = true;
-        resultB.ability_triggered = "Eject";
+        addTriggered(resultB, "Eject");
       }
 
       const aWinsFinal = !resultA.destroyed && resultB.destroyed;
@@ -260,22 +270,22 @@ function resolveRound(room) {
       if (resultA.destroyed && !abilityJammedA && cardHasAbility(origA, ABILITY.VOLATILE)) {
         // A explodes — hits all of B's lanes; B's past cards are 'opponent_card' in laneResults
         splashVolatile(hpB, prekilledB, lanesB, i, Math.floor(offA * 0.5), bWinsFinal ? resultB : null, 'opponent');
-        resultA.ability_triggered = "Volatile";
+        addTriggered(resultA, "Volatile");
       }
       if (resultB.destroyed && !abilityJammedB && cardHasAbility(origB, ABILITY.VOLATILE)) {
         // B explodes — hits all of A's lanes; A's past cards are 'player_card' in laneResults
         splashVolatile(hpA, prekilledA, lanesA, i, Math.floor(offB * 0.5), aWinsFinal ? resultA : null, 'player');
-        resultB.ability_triggered = "Volatile";
+        addTriggered(resultB, "Volatile");
       }
 
       // FIELD_REPAIR: survivor heals at end of round
       if (!resultA.destroyed && !abilityJammedA && cardHasAbility(origA, ABILITY.FIELD_REPAIR)) {
         resultA.current_hp = Math.min(origA.defense, resultA.current_hp + FIELD_REPAIR_AMOUNT);
-        resultA.ability_triggered = "Field Repair";
+        addTriggered(resultA, "Field Repair");
       }
       if (!resultB.destroyed && !abilityJammedB && cardHasAbility(origB, ABILITY.FIELD_REPAIR)) {
         resultB.current_hp = Math.min(origB.defense, resultB.current_hp + FIELD_REPAIR_AMOUNT);
-        resultB.ability_triggered = "Field Repair";
+        addTriggered(resultB, "Field Repair");
       }
 
     } else {
@@ -286,11 +296,11 @@ function resolveRound(room) {
 
       if (oCard) {
         if (!jammed && cardHasAbility(oCard, ABILITY.BLACKOUT)) {
-          result.ability_triggered = "Blackout";
+          addTriggered(result, "Blackout");
         }
         if (!result.destroyed && !jammed && cardHasAbility(oCard, ABILITY.FIELD_REPAIR)) {
           result.current_hp = Math.min(oCard.defense, result.current_hp + FIELD_REPAIR_AMOUNT);
-          result.ability_triggered = "Field Repair";
+          addTriggered(result, "Field Repair");
         }
       }
     }
