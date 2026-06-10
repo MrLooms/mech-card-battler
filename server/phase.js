@@ -139,9 +139,14 @@ function resolveRound(room) {
   }
 
   function applyDamage(result, card, damage, jammed) {
+    // Durable (Sturdy): survives a killing blow only if at FULL HP.
+    // Guard: defense must be > 1 — a card with defense:1 is always "at full HP"
+    // which would make it immortal if Durable fires on every hit.
+    const wasFullHp = result.current_hp === card.defense && card.defense > 1;
     result.current_hp -= damage;
-    if (!jammed && cardHasAbility(card, ABILITY.DURABLE) && result.current_hp <= 0) {
+    if (!jammed && cardHasAbility(card, ABILITY.DURABLE) && result.current_hp <= 0 && wasFullHp) {
       result.current_hp = 1;
+      addTriggered(result, "Durable");  // authoritative signal; client reads this
     }
     result.destroyed = result.current_hp <= 0;
   }
