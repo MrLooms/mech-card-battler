@@ -61,7 +61,7 @@ wss.on("connection", (ws, req) => {
     }
 
     // ── Matchmaking ────────────────────────────────────────────
-    if (type === "MATCH_QUEUE")  { enqueue(ws);      return; }
+    if (type === "MATCH_QUEUE")  { ws.rankPoints = (data && data.rank_points) ? data.rank_points : 0; enqueue(ws); return; }
     if (type === "MATCH_AI")     { createAiRoom(ws); return; }
     if (type === "MATCH_CANCEL") { dequeue(ws);      return; }
 

@@ -98,6 +98,9 @@ function resolveRound(room) {
   // Mutable HP — updated by sequential splash
   const hpA = lanesA.map(c => (c ? c.current_hp : null));
   const hpB = lanesB.map(c => (c ? c.current_hp : null));
+  // Snapshot before any splash so pre_battle_hp reflects true original HP
+  const origHpA = hpA.slice();
+  const origHpB = hpB.slice();
   const prekilledA = [false, false, false];
   const prekilledB = [false, false, false];
 
@@ -171,8 +174,10 @@ function resolveRound(room) {
       defense:           origA.defense,
       ability:           origA.ability,
       ability_2:         origA.ability_2 !== undefined ? origA.ability_2 : 0,
-      pre_battle_hp:     hpA[i] !== null ? hpA[i] : origA.current_hp,
-      current_hp:        hpA[i] !== null ? hpA[i] : origA.current_hp,
+      pre_battle_hp:     origHpA[i] !== null ? origHpA[i] : origA.current_hp,
+      current_hp:        hpA[i]    !== null ? hpA[i]    : origA.current_hp,
+      volatile_splash:   (origHpA[i] !== null && hpA[i] !== null && !prekilledA[i])
+                           ? Math.max(0, origHpA[i] - hpA[i]) : 0,
       destroyed:         prekilledA[i],
       ability_triggered: prekilledA[i] ? "Splash" : null,
     } : null;
@@ -189,8 +194,10 @@ function resolveRound(room) {
       defense:           origB.defense,
       ability:           origB.ability,
       ability_2:         origB.ability_2 !== undefined ? origB.ability_2 : 0,
-      pre_battle_hp:     hpB[i] !== null ? hpB[i] : origB.current_hp,
-      current_hp:        hpB[i] !== null ? hpB[i] : origB.current_hp,
+      pre_battle_hp:     origHpB[i] !== null ? origHpB[i] : origB.current_hp,
+      current_hp:        hpB[i]    !== null ? hpB[i]    : origB.current_hp,
+      volatile_splash:   (origHpB[i] !== null && hpB[i] !== null && !prekilledB[i])
+                           ? Math.max(0, origHpB[i] - hpB[i]) : 0,
       destroyed:         prekilledB[i],
       ability_triggered: prekilledB[i] ? "Splash" : null,
     } : null;

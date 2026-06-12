@@ -8,15 +8,25 @@ const queue = [];
 
 /**
  * Add a player to the matchmaking queue.
- * If another player is already waiting, pair them into a new room.
+ * Pairs with the closest-ranked waiting player; falls back to first if all equal.
  */
 function enqueue(ws) {
   if (queue.includes(ws)) return;
 
   if (queue.length > 0) {
-    const opponent = queue.shift();
+    // Find closest rank match
+    const myRank = ws.rankPoints || 0;
+    let bestIdx  = 0;
+    let bestDiff = Math.abs((queue[0].rankPoints || 0) - myRank);
+    for (let i = 1; i < queue.length; i++) {
+      const diff = Math.abs((queue[i].rankPoints || 0) - myRank);
+      if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+    }
+    const opponent = queue.splice(bestIdx, 1)[0];
+    console.log(`Matched ${ws.username}(${myRank}) vs ${opponent.username}(${opponent.rankPoints || 0}) — diff ${bestDiff}`);
     createRoom(ws, opponent);
   } else {
+    ws.rankPoints = ws.rankPoints || 0;
     queue.push(ws);
     ws.send(JSON.stringify({ type: "MATCH_QUEUE", data: { status: "waiting" } }));
   }
